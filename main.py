@@ -1,0 +1,204 @@
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+import os
+import config
+import subprocess
+import yt_dlp
+import logging
+from queue import Queue
+import threading
+
+# Configure logging
+logging.basicConfig(filename=str(config.DUMP_CHAT), level=logging.ERROR,
+                    format='%(asctime)s %(levelname)s:%(message)s')
+
+bot = Client(
+    "rtmpstreamer",
+    api_id=config.API_ID,
+    api_hash=config.API_HASH,
+    bot_token=config.BOT_TOKEN
+)
+
+output_url = config.RTMP_URL + config.RTMP_KEY
+ffmpeg_process = None
+song_queue = Queue()
+current_chat_id = None
+current_track = None
+download_dir = "downloads"
+
+ydl_opts = {
+    'format': 'bestaudio/best',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '320',
+    }],
+    'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
+}
+
+def download_video(video_url):
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(video_url, download=False)
+            ydl.download([video_url])
+            filename = ydl.prepare_filename(info)
+            return filename.replace("webm", "mp3")
+    except Exception as e:
+        logging.error(f"Error downloading video: {e}")
+        return None
+
+def start_streaming():
+    global ffmpeg_process, current_track
+    if song_queue.empty():
+        return
+
+    input_source = song_queue.get()
+    if not os.path.exists(input_source):
+        logging.error(f"File not found: {input_source}")
+        if not song_queue.empty():
+            start_streaming()  # Try the next song if the current one is missing
+        return
+
+    if ffmpeg_process:
+        ffmpeg_process.terminate()
+
+    # Notify the user about the current track
+    current_track = input_source
+    track_name = os.path.basename(input_source)
+    if current_chat_id:
+        bot.send_message(current_chat_id, f"Now playing: {track_name}")
+
+    ffmpeg_command = [
+        "ffmpeg", "-re", "-i", input_source,
+        "-c:v", "libx264", "-preset", "fast", "-b:v", "1500k", "-maxrate", "1500k", "-bufsize", "3000k",
+        "-pix_fmt", "yuv420p", "-g", "25", "-keyint_min", "25",
+        "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-ar", "44100",
+        "-f", "flv", output_url
+    ]
+
+    ffmpeg_process = subprocess.Popen(ffmpeg_command)
+    ffmpeg_process.wait()
+
+    if os.path.exists(input_source):
+        try:
+            os.remove(input_source)
+        except Exception as e:
+            logging.error(f"Error removing file: {e}")
+
+    # Start the next track if available
+    if not song_queue.empty():
+        start_streaming()
+
+def queue_song(file_path):
+    song_queue.put(file_path)
+    if not ffmpeg_process or ffmpeg_process.poll() is not None:
+        threading.Thread(target=start_streaming).start()
+
+@bot.on_message(filters.command("start"))
+def hello(_, m):
+    m.reply("Hello there")
+
+@bot.on_message(filters.command("play"))
+def play(_, m):
+    global current_chat_id
+    current_chat_id = m.chat.id
+    m.reply("Downloading......")
+    try:
+        file_path = m.reply_to_message.download(file_name=f"{download_dir}/")
+        m.reply("Adding to queue....")
+        queue_song(file_path)
+    except Exception as e:
+        m.reply(f"Error: {e}")
+        logging.error(f"Error in play command: {e}")
+
+@bot.on_message(filters.command("uplay"))
+def uplay(_, m):
+    global current_chat_id
+    current_chat_id = m.chat.id
+    url = m.text.replace("/uplay ", "").strip()
+    m.reply("Adding to queue....")
+    queue_song(url)
+
+@bot.on_message(filters.command("stop"))
+def stop(_, m):
+    global ffmpeg_process
+    if ffmpeg_process:
+        ffmpeg_process.terminate()
+        ffmpeg_process = None
+        m.reply("Stopped streaming.")
+    else:
+        m.reply("No active playback to stop.")
+
+@bot.on_message(filters.command("ytplay"))
+def ytplay(_, m):
+    global current_chat_id
+    current_chat_id = m.chat.id
+    url = m.text.replace("/ytplay ", "").strip()
+    m.reply("DOWNLOADING.....")
+    file_path = download_video(url)
+    if file_path:
+        m.reply("Adding to queue....")
+        queue_song(file_path)
+    else:
+        m.reply("Failed to download video.")
+
+@bot.on_message(filters.command("skip"))
+def skip(_, m):
+    global ffmpeg_process
+    if ffmpeg_process:
+        ffmpeg_process.terminate()
+        ffmpeg_process = None
+        m.reply("Skipped current track.")
+        # Start the next track in the queue
+        threading.Thread(target=start_streaming).start()
+    else:
+        m.reply("No track is currently playing.")
+
+@bot.on_message(filters.command("now"))
+def now(_, m):
+    if current_track:
+        track_name = os.path.basename(current_track)
+        m.reply(f"Currently playing: {track_name}")
+        # Add logic to send thumbnail/album cover if available
+    else:
+        m.reply("No track is currently playing.")
+
+@bot.on_message(filters.command("queue"))
+def queue_list(_, m):
+    if song_queue.empty():
+        m.reply("The queue is empty.")
+        return
+
+    queue_items = list(song_queue.queue)
+    queue_names = [os.path.basename(item) for item in queue_items]
+    queue_message = "Queue:\n" + "\n".join(queue_names)
+    m.reply(queue_message)
+
+@bot.on_message(filters.command("restart"))
+def restart(_, m):
+    m.reply("Restarting bot...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+@bot.on_message(filters.command("cache"))
+def cache(_, m):
+    files = os.listdir(download_dir)
+    if files:
+        file_list = "\n".join(files)
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("Clear Cache", callback_data="clear_cache")]]
+        )
+        m.reply(f"Downloaded files:\n{file_list}", reply_markup=keyboard)
+    else:
+        m.reply("No downloaded files found.")
+
+@bot.on_callback_query(filters.regex("clear_cache"))
+def clear_cache(_, query):
+    files = os.listdir(download_dir)
+    for file in files:
+        try:
+            os.remove(os.path.join(download_dir, file))
+        except Exception as e:
+            logging.error(f"Error removing file: {e}")
+    query.message.reply_text("Cache cleared.")
+
+bot.run()
