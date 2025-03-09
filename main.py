@@ -212,14 +212,17 @@ def ytplay(_, m):
 
 @bot.on_message(filters.command("skip"))
 def skip(_, m):
-    global ffmpeg_process
+    global ffmpeg_process, is_streaming
     if ffmpeg_process:
         ffmpeg_process.terminate()
         ffmpeg_process.wait()
         ffmpeg_process = None
         m.reply("Skipped current track.")
+        # Set is_streaming to False to allow the next track to start
+        is_streaming = False
         # Start the next track in the queue
-        threading.Thread(target=start_streaming).start()
+        if not song_queue.empty():
+            threading.Thread(target=start_streaming).start()
     else:
         m.reply("No track is currently playing.")
 
