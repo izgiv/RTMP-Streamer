@@ -228,7 +228,7 @@ def queue_list(_, m):
 
     queue_items = list(song_queue.queue)
     queue_names = [os.path.basename(item[0]) for item in queue_items]
-    queue_message = "Queue:\n" + "\n.join(queue_names)"
+    queue_message = "Queue:\n" + "\n".join(queue_names)
     m.reply(queue_message)
 
 @bot.on_message(filters.command("restart"))
