@@ -28,6 +28,7 @@ current_chat_id: Optional[int] = None
 current_track: Optional[str] = None
 current_thumbnail: Optional[str] = None
 download_dir = "downloads"
+is_streaming = False
 
 # yt-dlp options
 ydl_opts = {
@@ -66,10 +67,11 @@ def download_video(video_url: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 def start_streaming():
-    global ffmpeg_process, current_track, current_thumbnail
+    global ffmpeg_process, current_track, current_thumbnail, is_streaming
     if song_queue.empty():
         current_track = None
         current_thumbnail = None
+        is_streaming = False
         return
 
     input_source, thumbnail = song_queue.get()
@@ -113,14 +115,18 @@ def start_streaming():
             logging.error(error_message)
             send_log_message(error_message)
 
-    # Start the next track if available
+    # Check if there are more tracks to play
     if not song_queue.empty():
-        next_track, next_thumbnail = song_queue.queue[0]
-        queue_song(next_track, next_thumbnail)
+        is_streaming = True
+        threading.Thread(target=start_streaming).start()
+    else:
+        is_streaming = False
 
 def queue_song(file_path: str, thumbnail: Optional[str] = None):
+    global is_streaming
     song_queue.put((file_path, thumbnail))
-    if not ffmpeg_process or ffmpeg_process.poll() is not None:
+    if not is_streaming:
+        is_streaming = True
         threading.Thread(target=start_streaming).start()
 
 @bot.on_message(filters.command("start"))
