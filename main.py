@@ -10,8 +10,7 @@ import threading
 from typing import Optional
 
 # Configure logging
-logging.basicConfig(filename=str(config.DUMP_CHAT), level=logging.ERROR,
-                    format='%(asctime)s %(levelname)s:%(message)s')
+logging.basicConfig(level=logging.ERROR, format='%(asctime)s %(levelname)s:%(message)s')
 
 # Initialize bot
 bot = Client(
@@ -41,6 +40,12 @@ ydl_opts = {
     'writethumbnail': True,
 }
 
+def send_log_message(message: str):
+    try:
+        bot.send_message(chat_id=config.DUMP_CHAT, text=message)
+    except Exception as e:
+        logging.error(f"Failed to send log message: {e}")
+
 def download_video(video_url: str) -> Optional[str]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -50,9 +55,13 @@ def download_video(video_url: str) -> Optional[str]:
             thumbnail = info.get('thumbnail')
             return filename, thumbnail
     except yt_dlp.DownloadError as e:
-        logging.error(f"Error downloading video: {e}")
+        error_message = f"Error downloading video: {e}"
+        logging.error(error_message)
+        send_log_message(error_message)
     except Exception as e:
-        logging.error(f"Unexpected error: {e}")
+        error_message = f"Unexpected error: {e}"
+        logging.error(error_message)
+        send_log_message(error_message)
     return None, None
 
 def start_streaming():
@@ -62,7 +71,9 @@ def start_streaming():
 
     input_source, thumbnail = song_queue.get()
     if not os.path.exists(input_source):
-        logging.error(f"File not found: {input_source}")
+        error_message = f"File not found: {input_source}"
+        logging.error(error_message)
+        send_log_message(error_message)
         start_streaming() # Try the next song if the current one is missing
         return
 
@@ -94,7 +105,9 @@ def start_streaming():
         try:
             os.remove(input_source)
         except Exception as e:
-            logging.error(f"Error removing file: {e}")
+            error_message = f"Error removing file: {e}"
+            logging.error(error_message)
+            send_log_message(error_message)
 
     # Start the next track if available
     start_streaming()
@@ -114,7 +127,7 @@ def hello(_, m):
             [InlineKeyboardButton("Group 2", url="https://t.me/AniMixChat")]
         ]
     )
-    m.reply_photo(photo="https://envs.sh/0xA.jpg", caption="Welcome to RTMP Streamer Bot!", reply_markup=start_buttons)
+    m.reply_photo(photo="https://envs.sh/0xY.jpg", caption="Welcome to RTMP Streamer Bot!", reply_markup=start_buttons)
 
 @bot.on_callback_query(filters.regex("commands"))
 def show_commands(_, query):
@@ -148,8 +161,10 @@ def play(_, m):
         m.reply("Adding to queue....")
         queue_song(file_path)
     except Exception as e:
+        error_message = f"Error in play command: {e}"
+        logging.error(error_message)
+        send_log_message(error_message)
         m.reply(f"Error: {e}")
-        logging.error(f"Error in play command: {e}")
 
 @bot.on_message(filters.command("uplay"))
 def uplay(_, m):
@@ -240,7 +255,9 @@ def clear_cache(_, query):
         try:
             os.remove(os.path.join(download_dir, file))
         except Exception as e:
-            logging.error(f"Error removing file: {e}")
+            error_message = f"Error removing file: {e}"
+            logging.error(error_message)
+            send_log_message(error_message)
     query.message.reply_text("Cache cleared.")
 
 bot.run()
