@@ -7,7 +7,7 @@ import yt_dlp
 import logging
 from queue import Queue
 import threading
-from typing import Optional, List, Tuple
+from typing import Optional, Tuple
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s %(levelname)s:%(message)s')
@@ -77,7 +77,7 @@ def start_streaming():
         error_message = f"File not found: {input_source}"
         logging.error(error_message)
         send_log_message(error_message)
-        start_streaming() # Try the next song if the current one is missing
+        start_streaming()  # Try the next song if the current one is missing
         return
 
     if ffmpeg_process:
@@ -114,7 +114,9 @@ def start_streaming():
             send_log_message(error_message)
 
     # Start the next track if available
-    start_streaming()
+    if not song_queue.empty():
+        next_track, next_thumbnail = song_queue.queue[0]
+        queue_song(next_track, next_thumbnail)
 
 def queue_song(file_path: str, thumbnail: Optional[str] = None):
     song_queue.put((file_path, thumbnail))
