@@ -1,5 +1,5 @@
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 import os
 import config
 import subprocess
@@ -7,11 +7,13 @@ import yt_dlp
 import logging
 from queue import Queue
 import threading
+from typing import Optional
 
 # Configure logging
 logging.basicConfig(filename=str(config.DUMP_CHAT), level=logging.ERROR,
                     format='%(asctime)s %(levelname)s:%(message)s')
 
+# Initialize bot
 bot = Client(
     "rtmpstreamer",
     api_id=config.API_ID,
@@ -19,13 +21,15 @@ bot = Client(
     bot_token=config.BOT_TOKEN
 )
 
+# Constants and Globals
 output_url = config.RTMP_URL + config.RTMP_KEY
-ffmpeg_process = None
+ffmpeg_process: Optional[subprocess.Popen] = None
 song_queue = Queue()
-current_chat_id = None
-current_track = None
+current_chat_id: Optional[int] = None
+current_track: Optional[str] = None
 download_dir = "downloads"
 
+# yt-dlp options
 ydl_opts = {
     'format': 'bestaudio/best',
     'postprocessors': [{
@@ -34,39 +38,46 @@ ydl_opts = {
         'preferredquality': '320',
     }],
     'outtmpl': f'{download_dir}/%(title)s.%(ext)s',
+    'writethumbnail': True,
 }
 
-def download_video(video_url):
+def download_video(video_url: str) -> Optional[str]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
             ydl.download([video_url])
-            filename = ydl.prepare_filename(info)
-            return filename.replace("webm", "mp3")
-    except Exception as e:
+            filename = ydl.prepare_filename(info).replace("webm", "mp3")
+            thumbnail = info.get('thumbnail')
+            return filename, thumbnail
+    except yt_dlp.DownloadError as e:
         logging.error(f"Error downloading video: {e}")
-        return None
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+    return None, None
 
 def start_streaming():
     global ffmpeg_process, current_track
     if song_queue.empty():
         return
 
-    input_source = song_queue.get()
+    input_source, thumbnail = song_queue.get()
     if not os.path.exists(input_source):
         logging.error(f"File not found: {input_source}")
-        if not song_queue.empty():
-            start_streaming()  # Try the next song if the current one is missing
+        start_streaming() # Try the next song if the current one is missing
         return
 
     if ffmpeg_process:
         ffmpeg_process.terminate()
+        ffmpeg_process.wait()
 
     # Notify the user about the current track
     current_track = input_source
     track_name = os.path.basename(input_source)
     if current_chat_id:
-        bot.send_message(current_chat_id, f"Now playing: {track_name}")
+        if thumbnail:
+            bot.send_photo(current_chat_id, photo=thumbnail, caption=f"Now playing: {track_name}")
+        else:
+            bot.send_message(current_chat_id, f"Now playing: {track_name}")
 
     ffmpeg_command = [
         "ffmpeg", "-re", "-i", input_source,
@@ -86,17 +97,46 @@ def start_streaming():
             logging.error(f"Error removing file: {e}")
 
     # Start the next track if available
-    if not song_queue.empty():
-        start_streaming()
+    start_streaming()
 
-def queue_song(file_path):
-    song_queue.put(file_path)
+def queue_song(file_path: str, thumbnail: Optional[str] = None):
+    song_queue.put((file_path, thumbnail))
     if not ffmpeg_process or ffmpeg_process.poll() is not None:
         threading.Thread(target=start_streaming).start()
 
 @bot.on_message(filters.command("start"))
 def hello(_, m):
-    m.reply("Hello there")
+    start_buttons = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Commands", callback_data="commands")],
+            [InlineKeyboardButton("RTMP Stream Setup", callback_data="rtmp_setup")],
+            [InlineKeyboardButton("Group 1", url="https://t.me/TheSoloGuild")],
+            [InlineKeyboardButton("Group 2", url="https://t.me/AniMixChat")]
+        ]
+    )
+    m.reply_photo(photo="https://envs.sh/0xA.jpg", caption="Welcome to RTMP Streamer Bot!", reply_markup=start_buttons)
+
+@bot.on_callback_query(filters.regex("commands"))
+def show_commands(_, query):
+    commands_text = "Available Commands:\n/start - Start the bot\n/play - Play a song\n/uplay - Play a URL\n/stop - Stop streaming\n/ytplay - Play a YouTube video\n/skip - Skip current track\n/now - Show current track\n/queue - Show queue\n/restart - Restart the bot\n/cache - Show cache"
+    back_button = InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]])
+    query.message.edit_text(commands_text, reply_markup=back_button)
+
+@bot.on_callback_query(filters.regex("back"))
+def back_to_start(_, query):
+    start_buttons = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Commands", callback_data="commands")],
+            [InlineKeyboardButton("RTMP Stream Setup", callback_data="rtmp_setup")],
+            [InlineKeyboardButton("Group 1", url="https://t.me/TheSoloGuild")],
+            [InlineKeyboardButton("Group 2", url="https://t.me/AniMixChat")]
+        ]
+    )
+    query.message.edit_reply_markup(reply_markup=start_buttons)
+
+@bot.on_callback_query(filters.regex("rtmp_setup"))
+def rtmp_setup(_, query):
+    query.message.edit_caption(caption="RTMP Stream Setup", media=InputMediaPhoto(media="rtmp_setup_video.mp4"))
 
 @bot.on_message(filters.command("play"))
 def play(_, m):
@@ -124,6 +164,7 @@ def stop(_, m):
     global ffmpeg_process
     if ffmpeg_process:
         ffmpeg_process.terminate()
+        ffmpeg_process.wait()
         ffmpeg_process = None
         m.reply("Stopped streaming.")
     else:
@@ -135,10 +176,10 @@ def ytplay(_, m):
     current_chat_id = m.chat.id
     url = m.text.replace("/ytplay ", "").strip()
     m.reply("DOWNLOADING.....")
-    file_path = download_video(url)
+    file_path, thumbnail = download_video(url)
     if file_path:
         m.reply("Adding to queue....")
-        queue_song(file_path)
+        queue_song(file_path, thumbnail)
     else:
         m.reply("Failed to download video.")
 
@@ -147,6 +188,7 @@ def skip(_, m):
     global ffmpeg_process
     if ffmpeg_process:
         ffmpeg_process.terminate()
+        ffmpeg_process.wait()
         ffmpeg_process = None
         m.reply("Skipped current track.")
         # Start the next track in the queue
@@ -170,8 +212,8 @@ def queue_list(_, m):
         return
 
     queue_items = list(song_queue.queue)
-    queue_names = [os.path.basename(item) for item in queue_items]
-    queue_message = "Queue:\n" + "\n".join(queue_names)
+    queue_names = [os.path.basename(item[0]) for item in queue_items]
+    queue_message = "Queue:\n" + "\n.join(queue_names)"
     m.reply(queue_message)
 
 @bot.on_message(filters.command("restart"))
