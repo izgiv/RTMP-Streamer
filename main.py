@@ -7,7 +7,7 @@ import yt_dlp
 import logging
 from queue import Queue
 import threading
-from typing import Optional
+from typing import Optional, List, Tuple
 
 # Configure logging
 logging.basicConfig(level=logging.ERROR, format='%(asctime)s %(levelname)s:%(message)s')
@@ -26,6 +26,7 @@ ffmpeg_process: Optional[subprocess.Popen] = None
 song_queue = Queue()
 current_chat_id: Optional[int] = None
 current_track: Optional[str] = None
+current_thumbnail: Optional[str] = None
 download_dir = "downloads"
 
 # yt-dlp options
@@ -46,7 +47,7 @@ def send_log_message(message: str):
     except Exception as e:
         logging.error(f"Failed to send log message: {e}")
 
-def download_video(video_url: str) -> Optional[str]:
+def download_video(video_url: str) -> Tuple[Optional[str], Optional[str]]:
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(video_url, download=False)
@@ -65,8 +66,10 @@ def download_video(video_url: str) -> Optional[str]:
     return None, None
 
 def start_streaming():
-    global ffmpeg_process, current_track
+    global ffmpeg_process, current_track, current_thumbnail
     if song_queue.empty():
+        current_track = None
+        current_thumbnail = None
         return
 
     input_source, thumbnail = song_queue.get()
@@ -83,6 +86,7 @@ def start_streaming():
 
     # Notify the user about the current track
     current_track = input_source
+    current_thumbnail = thumbnail
     track_name = os.path.basename(input_source)
     if current_chat_id:
         if thumbnail:
@@ -215,8 +219,10 @@ def skip(_, m):
 def now(_, m):
     if current_track:
         track_name = os.path.basename(current_track)
-        m.reply(f"Currently playing: {track_name}")
-        # Add logic to send thumbnail/album cover if available
+        if current_thumbnail:
+            m.reply_photo(photo=current_thumbnail, caption=f"Currently playing: {track_name}")
+        else:
+            m.reply(f"Currently playing: {track_name}")
     else:
         m.reply("No track is currently playing.")
 
